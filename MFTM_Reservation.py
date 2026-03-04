@@ -15,23 +15,17 @@ def get_base64_image(image_path):
     with open(image_path, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode()
 
-# [추가] 이름별 고유 색상을 반환하는 함수
+# 이름별 고유 색상을 반환하는 함수
 def get_color_by_name(name):
-    # '신아테크'는 ATI의 아이덴티티를 담은 Red 계열로 고정!
+    # '신아테크'는 ATI의 아이덴티티를 담은 Red 계열로 고정
     if name == "신아테크":
         return "#D32F2F" # ATI Red
     
     # 그 외 이름들은 7가지 팔레트에서 자동으로 배정
     color_palette = [
-        "#1E88E5", # Blue
-        "#43A047", # Green
-        "#FB8C00", # Orange
-        "#8E24AA", # Purple
-        "#00ACC1", # Cyan
-        "#3949AB", # Indigo
-        "#5D4037"  # Brown
+        "#1E88E5", "#43A047", "#FB8C00", "#8E24AA", 
+        "#00ACC1", "#3949AB", "#5D4037" 
     ]
-    # 이름 문자열을 숫자로 변환하여 팔레트에서 하나 선택
     idx = sum(ord(char) for char in name) % len(color_palette)
     return color_palette[idx]
 
@@ -104,15 +98,54 @@ def check_overlap(new_date, new_time, new_duration_str, current_df, ignore_id=No
             return True, f"⚠️ 중복 일정 발견: [{row['설비명 & 작업내용']}] {row['시간']} ~ {exist_end.strftime('%H:%M')}"
     return False, ""
 
-# --- 팝업 함수 ---
+# --- 🚨 업데이트 1: 팝업 함수 (달력 내 관리자 수정/삭제 기능) ---
 @st.dialog("📅 예약 상세 정보")
 def show_event_popup(event_data):
+    global df, conn # 데이터 수정을 위해 전역 변수 선언
     props = event_data.get("extendedProps", {})
+    target_id = props.get("id", "")
+    
     st.markdown(f"**🏢 신청자:** {props.get('applicant', '')}")
     st.markdown(f"**🚜 설비명 & 작업내용:** {props.get('equip', '')}")
     st.markdown(f"**⏰ 예약 일시:** {event_data.get('start', '').replace('T', ' ')}")
     st.markdown(f"**⏳ 소요 시간:** {props.get('duration', '')}")
     st.markdown(f"**✅ 상태:** {props.get('status', '')}")
+
+    # 관리자 메뉴에 로그인되어 있을 때만 아래 기능이 활성화됩니다!
+    if st.session_state.admin_auth and target_id:
+        st.divider()
+        st.markdown("🛠️ **관리자 빠른 달력 관리**")
+        
+        # 삭제 기능
+        if st.button("🗑️ 이 예약 강제 삭제하기", type="primary", use_container_width=True):
+            df = df[df['ID'] != target_id]
+            conn.update(data=df)
+            st.success("예약이 완전히 삭제되었습니다."); st.rerun()
+            
+        # 수정 기능
+        with st.expander("✏️ 세부 일정 직접 수정"):
+            target_idx = df[df['ID'] == target_id].index
+            if not target_idx.empty:
+                e_row = df.loc[target_idx[0]]
+                new_eq = st.text_input("설비명 & 작업내용 수정", value=e_row['설비명 & 작업내용'], key="pop_eq")
+                c_date, c_time = st.columns(2)
+                new_d = c_date.date_input("날짜", value=pd.to_datetime(e_row['날짜']), key="pop_d")
+                h, m = map(int, str(e_row['시간']).split(':'))
+                new_t = c_time.time_input("시간", value=datetime.time(h, m), step=1800, key="pop_t")
+                dur_opts = ["1시간", "2시간", "3시간", "4시간", "5시간 이상"]
+                cur_dur = e_row['소요시간'] if e_row['소요시간'] in dur_opts else "1시간"
+                new_dur = st.selectbox("소요시간", dur_opts, index=dur_opts.index(cur_dur), key="pop_dur")
+                
+                if st.button("💾 달력 변경 내용 저장", key="pop_save"):
+                    is_ov, m_ov = check_overlap(new_d, new_t, new_dur, df, ignore_id=target_id)
+                    if is_ov: st.error(m_ov)
+                    else:
+                        df.at[target_idx[0], '설비명 & 작업내용'] = new_eq
+                        df.at[target_idx[0], '날짜'] = str(new_d)
+                        df.at[target_idx[0], '시간'] = str(new_t)[:5]
+                        df.at[target_idx[0], '소요시간'] = new_dur
+                        conn.update(data=df)
+                        st.success("달력 수정이 완료되었습니다!"); st.rerun()
 
 # --- 메인 UI 상단 ---
 if os.path.exists(LOGO_PATH):
@@ -171,7 +204,7 @@ with col_right:
             else: st.error("비밀번호 틀림")
     else:
         if st.button("로그아웃"): st.session_state.admin_auth = False; st.rerun()
-        tab1, tab2 = st.tabs(["🆕 승인", "✏️ 수정"])
+        tab1, tab2 = st.tabs(["🆕 승인 및 관리", "✏️ 수정"])
         with tab1:
             a_p_df = df[df["상태"] == "대기중"]
             if not a_p_df.empty:
@@ -184,12 +217,17 @@ with col_right:
                 r_time = datetime.datetime.strptime(row['시간'], "%H:%M").time()
                 is_overlap, msg = check_overlap(r_date, r_time, row['소요시간'], df)
                 if is_overlap: st.warning(f"참고: {msg}")
-                c1, c2 = st.columns(2)
+                
+                # --- 🚨 업데이트 2: 관리자 메뉴에 삭제 버튼 추가 ---
+                c1, c2, c3 = st.columns(3)
                 if c1.button("✅ 승인", use_container_width=True):
                     df.loc[df['ID'] == a_id, '상태'] = '승인완료'; conn.update(data=df); st.rerun()
                 if c2.button("❌ 반려", use_container_width=True):
                     df.loc[df['ID'] == a_id, '상태'] = '반려'; conn.update(data=df); st.rerun()
+                if c3.button("🗑️ 삭제", use_container_width=True):
+                    df = df[df['ID'] != a_id]; conn.update(data=df); st.rerun()
             else: st.info("대기 건 없음")
+            
         with tab2:
             today = datetime.date.today()
             this_monday = today - timedelta(days=today.weekday())
@@ -205,6 +243,7 @@ with col_right:
                     h, m = map(int, e_row['시간'].split(':'))
                     new_t = c_time.time_input("시간", value=datetime.time(h, m), step=1800)
                     new_dur = st.selectbox("소요시간", ["1시간", "2시간", "3시간", "4시간", "5시간 이상"], index=["1시간", "2시간", "3시간", "4시간", "5시간 이상"].index(e_row['소요시간']) if e_row['소요시간'] in ["1시간", "2시간", "3시간", "4시간", "5시간 이상"] else 0)
+                    
                     if st.button("💾 모든 변경 내용 저장"):
                         is_ov, m_ov = check_overlap(new_d, new_t, new_dur, df, ignore_id=e_row['ID'])
                         if is_ov: st.error(m_ov)
@@ -215,6 +254,10 @@ with col_right:
                             df.at[idx, '시간'] = str(new_t)[:5]
                             df.at[idx, '소요시간'] = new_dur
                             conn.update(data=df); st.success("수정 완료!"); st.rerun()
+                    
+                    # 관리자 메뉴(수정 탭) 하단에도 일정 삭제 버튼 추가
+                    if st.button("🗑️ 이 예약 강제 삭제하기"):
+                        df = df[df['ID'] != e_row['ID']]; conn.update(data=df); st.rerun()
             else: st.info("수정 가능한 일정이 없습니다.")
 
 # 📌 좌측 영역 (달력)
@@ -229,7 +272,6 @@ with col_left:
                 dur_h = int(r['소요시간'][0]) if r['소요시간'][0].isdigit() else 1
                 end_dt = start_dt + timedelta(hours=dur_h)
                 
-                # [수정] 신청자 이름에 따라 색상 자동 배정
                 applicant_name = str(r['신청자'])
                 event_color = get_color_by_name(applicant_name)
                 
@@ -237,8 +279,15 @@ with col_left:
                     "title": f"[{r['설비명 & 작업내용']}] {applicant_name}", 
                     "start": start_dt.strftime("%Y-%m-%dT%H:%M"), 
                     "end": end_dt.strftime("%Y-%m-%dT%H:%M"), 
-                    "color": event_color, # 배정된 색상 적용
-                    "extendedProps": {"applicant": applicant_name, "equip": str(r['설비명 & 작업내용']), "duration": str(r['소요시간']), "status": str(r['상태'])}
+                    "color": event_color, 
+                    "extendedProps": {
+                        "applicant": applicant_name, 
+                        "equip": str(r['설비명 & 작업내용']), 
+                        "duration": str(r['소요시간']), 
+                        "status": str(r['상태']),
+                        # --- 🚨 업데이트 3: 달력 팝업에 고유 ID 전달 ---
+                        "id": str(r['ID']) 
+                    }
                 })
             except: continue
     res = calendar(events=events, options={"headerToolbar": {"left": "today prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek,timeGridDay"}, "initialView": "dayGridMonth", "locale": "ko", "slotMinTime": "06:00:00", "slotMaxTime": "22:00:00"})

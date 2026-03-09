@@ -3,292 +3,328 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from streamlit_calendar import calendar
 import datetime
-from datetime import timedelta
-import requests
 import os
 import base64
 
-# --- 설정 및 보안 ---
+# --- 설정 및 기초 함수 ---
 LOGO_PATH = "ati_logo.png" 
+CATEGORIES = ["클리닝", "패킹&출하", "도킹", "RND설치", "작업의뢰", "빌드업", "입고", "기타"]
+
+EMOJI_MAP = {
+    "클리닝": "🔴", "패킹&출하": "🟠", "도킹": "🟡", 
+    "RND설치": "🟢", "작업의뢰": "🔵", "빌드업": "🟣", 
+    "입고": "🟤", "기타": "⚫"
+}
 
 def get_base64_image(image_path):
-    with open(image_path, "rb") as img_file:
-        return base64.b64encode(img_file.read()).decode()
+    if os.path.exists(image_path):
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    return ""
 
-# 이름별 고유 색상을 반환하는 함수
-def get_color_by_name(name):
-    # '신아테크'는 ATI의 아이덴티티를 담은 Red 계열로 고정
-    if name == "신아테크":
-        return "#D32F2F" # ATI Red
-    
-    # 그 외 이름들은 7가지 팔레트에서 자동으로 배정
-    color_palette = [
-        "#1E88E5", "#43A047", "#FB8C00", "#8E24AA", 
-        "#00ACC1", "#3949AB", "#5D4037" 
-    ]
-    idx = sum(ord(char) for char in name) % len(color_palette)
-    return color_palette[idx]
+def get_color_by_category(category):
+    colors = {
+        "클리닝": "#FF4B4B", "패킹&출하": "#FF9900", "도킹": "#E6B800", 
+        "RND설치": "#2E8B57", "작업의뢰": "#1E90FF", "빌드업": "#4B0082", 
+        "입고": "#8D6E63", "기타": "#555555"
+    }
+    return colors.get(category, "#757575")
 
-st.set_page_config(
-    page_title="제조본부 예약 시스템", 
-    layout="wide",
-    page_icon=LOGO_PATH if os.path.exists(LOGO_PATH) else "🚜"
-)
+st.set_page_config(page_title="제조본부 예약 시스템", layout="wide", page_icon="ati_logo.png")
 
-# UI 스타일 정의 (로그인창 너비 제한 포함)
 st.markdown(
     """
     <style>
     .title-wrapper { display: flex; align-items: center; justify-content: flex-start; gap: 20px; margin-bottom: 30px; }
     .logo-img { height: 60px; width: auto; object-fit: contain; }
     .main-title { font-size: 2.5rem; font-weight: bold; margin: 0; }
-    .stTextInput { max-width: 400px; }
-    div.stButton > button { max-width: 400px; }
-    .block-container { padding-top: 3rem; }
+    /* 라디오 버튼 간격 살짝 띄우기 */
+    .stRadio > div { gap: 15px; } 
     </style>
-    """,
-    unsafe_allow_html=True
+    """, unsafe_allow_html=True
 )
 
-if 'auth' not in st.session_state: st.session_state.auth = False
-if 'admin_auth' not in st.session_state: st.session_state.admin_auth = False
+if 'role' not in st.session_state: st.session_state.role = None
 
-# --- 진입 화면 ---
-if not st.session_state.auth:
-    if os.path.exists(LOGO_PATH):
-        img_base64 = get_base64_image(LOGO_PATH)
-        st.markdown(f'<div class="title-wrapper"><img src="data:image/png;base64,{img_base64}" class="logo-img"><h1 class="main-title">제조본부 예약 시스템</h1></div>', unsafe_allow_html=True)
-    else: st.title("제조본부 예약 시스템")
-    
-    login_pw = st.text_input("입장 비밀번호를 입력하세요", type="password")
-    if st.button("입장하기"):
-        if login_pw == "1234":
-            st.session_state.auth = True
-            st.rerun()
-        else: st.error("암호가 틀렸습니다.")
-    st.stop()
-
-# --- 구글 시트 연결 ---
+# --- 구글 시트 연결 및 데이터 로드 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 try:
-    df = conn.read(ttl="0")
-    df = df.dropna(how="all")
+    df = conn.read(ttl="0").dropna(how="all")
+    for col in ["분류", "시간구분", "비고"]:
+        if col not in df.columns: df[col] = ""
     for col in ["비밀번호", "ID"]:
         if col in df.columns:
             df[col] = df[col].astype(str).apply(lambda x: x[:-2] if x.endswith('.0') else x)
-            if col == "비밀번호":
-                df[col] = df[col].apply(lambda x: "0000" if x == "0" else x)
-    if "시간" in df.columns:
-        df["시간"] = df["시간"].astype(str).apply(lambda x: f"0{x}" if len(x.split(':')[0]) == 1 else x)
-except Exception as e:
-    df = pd.DataFrame(columns=["신청자", "설비명 & 작업내용", "날짜", "시간", "소요시간", "비밀번호", "상태", "ID"])
+            if col == "비밀번호": df[col] = df[col].apply(lambda x: "0000" if x == "0" else x)
+except Exception:
+    df = pd.DataFrame(columns=["신청자", "분류", "설비명 & 작업내용", "날짜", "시간구분", "비고", "비밀번호", "상태", "ID", "등록일시"])
 
-# --- 중복 체크 함수 ---
-def check_overlap(new_date, new_time, new_duration_str, current_df, ignore_id=None):
-    start_dt = datetime.datetime.combine(new_date, new_time)
-    dur_h = int(new_duration_str[0]) if new_duration_str[0].isdigit() else 1
-    end_dt = start_dt + timedelta(hours=dur_h)
-    approved_df = current_df[current_df["상태"] == "승인완료"]
-    if ignore_id: approved_df = approved_df[approved_df["ID"] != ignore_id]
-    for _, row in approved_df.iterrows():
-        exist_start = datetime.datetime.strptime(f"{row['날짜']} {row['시간']}", "%Y-%m-%d %H:%M")
-        e_dur_h = int(row['소요시간'][0]) if row['소요시간'][0].isdigit() else 1
-        exist_end = exist_start + timedelta(hours=e_dur_h)
-        if (start_dt < exist_end) and (end_dt > exist_start):
-            return True, f"⚠️ 중복 일정 발견: [{row['설비명 & 작업내용']}] {row['시간']} ~ {exist_end.strftime('%H:%M')}"
-    return False, ""
-
-# --- 🚨 업데이트 1: 팝업 함수 (달력 내 관리자 수정/삭제 기능) ---
+# --- 팝업 (관리자 달력용) ---
 @st.dialog("📅 예약 상세 정보")
 def show_event_popup(event_data):
-    global df, conn # 데이터 수정을 위해 전역 변수 선언
+    global df, conn
     props = event_data.get("extendedProps", {})
     target_id = props.get("id", "")
     
+    st.markdown(f"**🏷️ 분류:** {props.get('category', '')}")
     st.markdown(f"**🏢 신청자:** {props.get('applicant', '')}")
     st.markdown(f"**🚜 설비명 & 작업내용:** {props.get('equip', '')}")
-    st.markdown(f"**⏰ 예약 일시:** {event_data.get('start', '').replace('T', ' ')}")
-    st.markdown(f"**⏳ 소요 시간:** {props.get('duration', '')}")
+    st.markdown(f"**⏰ 요청 일정:** {props.get('date', '')} ({props.get('time_type', '')})")
+    st.markdown(f"**📝 비고(요청사항):** {props.get('note', '없음')}")
     st.markdown(f"**✅ 상태:** {props.get('status', '')}")
 
-    # 관리자 메뉴에 로그인되어 있을 때만 아래 기능이 활성화됩니다!
-    if st.session_state.admin_auth and target_id:
+    if st.session_state.role == 'admin' and target_id:
         st.divider()
-        st.markdown("🛠️ **관리자 빠른 달력 관리**")
+        st.markdown("🛠️ **관리자 액션**")
         
-        # 삭제 기능
-        if st.button("🗑️ 이 예약 강제 삭제하기", type="primary", use_container_width=True):
-            df = df[df['ID'] != target_id]
-            conn.update(data=df)
-            st.success("예약이 완전히 삭제되었습니다."); st.rerun()
-            
-        # 수정 기능
-        with st.expander("✏️ 세부 일정 직접 수정"):
+        # 🚨 업데이트: 관리자는 팝업에서도 바로 수정 가능!
+        with st.expander("✏️ 이 예약 내용 수정하기"):
             target_idx = df[df['ID'] == target_id].index
             if not target_idx.empty:
                 e_row = df.loc[target_idx[0]]
-                new_eq = st.text_input("설비명 & 작업내용 수정", value=e_row['설비명 & 작업내용'], key="pop_eq")
-                c_date, c_time = st.columns(2)
-                new_d = c_date.date_input("날짜", value=pd.to_datetime(e_row['날짜']), key="pop_d")
-                h, m = map(int, str(e_row['시간']).split(':'))
-                new_t = c_time.time_input("시간", value=datetime.time(h, m), step=1800, key="pop_t")
-                dur_opts = ["1시간", "2시간", "3시간", "4시간", "5시간 이상"]
-                cur_dur = e_row['소요시간'] if e_row['소요시간'] in dur_opts else "1시간"
-                new_dur = st.selectbox("소요시간", dur_opts, index=dur_opts.index(cur_dur), key="pop_dur")
+                e_cat = st.selectbox("분류", CATEGORIES, index=CATEGORIES.index(e_row['분류']) if e_row['분류'] in CATEGORIES else 0, key="pop_cat")
+                e_eq = st.text_input("작업내용", value=e_row['설비명 & 작업내용'], key="pop_eq")
+                e_d = st.date_input("날짜", value=pd.to_datetime(e_row['날짜']), key="pop_d")
+                e_t = st.radio("시간구분", ["오전", "오후", "종일"], index=["오전", "오후", "종일"].index(e_row['시간구분']) if e_row['시간구분'] in ["오전", "오후", "종일"] else 0, horizontal=True, key="pop_t")
+                e_n = st.text_area("비고", value=e_row.get('비고', ''), key="pop_n")
                 
-                if st.button("💾 달력 변경 내용 저장", key="pop_save"):
-                    is_ov, m_ov = check_overlap(new_d, new_t, new_dur, df, ignore_id=target_id)
-                    if is_ov: st.error(m_ov)
-                    else:
-                        df.at[target_idx[0], '설비명 & 작업내용'] = new_eq
-                        df.at[target_idx[0], '날짜'] = str(new_d)
-                        df.at[target_idx[0], '시간'] = str(new_t)[:5]
-                        df.at[target_idx[0], '소요시간'] = new_dur
-                        conn.update(data=df)
-                        st.success("달력 수정이 완료되었습니다!"); st.rerun()
+                if st.button("💾 수정 내용 저장", key="pop_save"):
+                    df.at[target_idx[0], '분류'] = e_cat
+                    df.at[target_idx[0], '설비명 & 작업내용'] = e_eq
+                    df.at[target_idx[0], '날짜'] = str(e_d)
+                    df.at[target_idx[0], '시간구분'] = e_t
+                    df.at[target_idx[0], '비고'] = e_n
+                    conn.update(data=df); st.success("수정되었습니다."); st.rerun()
 
-# --- 메인 UI 상단 ---
-if os.path.exists(LOGO_PATH):
-    img_base64_main = get_base64_image(LOGO_PATH)
-    st.markdown(f'<div class="title-wrapper"><img src="data:image/png;base64,{img_base64_main}" class="logo-img" style="height:50px;"><h2 style="margin:0;">제조본부 실시간 예약 현황</h2></div>', unsafe_allow_html=True)
-else: st.header("제조본부 실시간 예약 현황")
+        if st.button("🗑️ 이 예약 강제 삭제하기", use_container_width=True):
+            df = df[df['ID'] != target_id]; conn.update(data=df)
+            st.success("삭제되었습니다."); st.rerun()
 
-col_left, col_right = st.columns([7, 3])
+# --- 로그인 화면 ---
+if st.session_state.role is None:
+    img_b64 = get_base64_image(LOGO_PATH)
+    if img_b64: st.markdown(f'<div class="title-wrapper"><img src="data:image/png;base64,{img_b64}" class="logo-img"><h1 class="main-title">제조본부 예약 시스템</h1></div>', unsafe_allow_html=True)
+    else: st.title("제조본부 예약 시스템")
+    
+    col_l1, col_l2 = st.columns([1, 2])
+    with col_l1:
+        st.subheader("로그인")
+        login_pw = st.text_input("입장 비밀번호를 입력하세요", type="password")
+        if st.button("접속하기", use_container_width=True):
+            if login_pw == "1234":
+                st.session_state.role = 'user'; st.rerun()
+            elif login_pw == "ati5344":
+                st.session_state.role = 'admin'; st.rerun()
+            else: st.error("비밀번호가 일치하지 않습니다.")
+    st.stop()
 
-# 📌 우측 영역
-with col_right:
-    st.subheader("📝 예약 등록")
-    with st.form("input_form", clear_on_submit=True):
-        name = st.text_input("신청자 이름", value="신아테크")
-        equip = st.text_input("설비명 & 작업내용", placeholder="예: SGM #1 등")
-        date = st.date_input("예약 날짜")
-        time = st.time_input("작업 예정 시간", value=datetime.time(10, 0), step=1800) 
-        duration = st.selectbox("예상 소요 시간", ["1시간", "2시간", "3시간", "4시간", "5시간 이상"])
-        res_pw = st.text_input("비밀번호(취소용)", type="password")
-        if st.form_submit_button("예약 신청하기"):
-            is_overlap, msg = check_overlap(date, time, duration, df)
-            if not equip or not res_pw: st.error("내용을 입력하세요!")
-            elif is_overlap: st.error(msg)
-            else:
-                new_data = pd.DataFrame([{"신청자": name, "설비명 & 작업내용": equip, "날짜": str(date), "시간": str(time)[:5], "소요시간": duration, "비밀번호": str(res_pw), "상태": "대기중", "ID": str(pd.Timestamp.now().strftime("%Y%m%d%H%M%S"))}])
-                conn.update(data=pd.concat([df, new_data], ignore_index=True))
-                st.success("신청 완료!"); st.rerun()
+# --- 헤더 ---
+col_logo, col_logout = st.columns([8, 1])
+with col_logo:
+    img_b64 = get_base64_image(LOGO_PATH)
+    if img_b64: st.markdown(f'<div class="title-wrapper" style="margin-bottom:10px;"><img src="data:image/png;base64,{img_b64}" class="logo-img" style="height:40px;"><h2 style="margin:0;">제조본부 실시간 예약 현황 ({"관리자" if st.session_state.role == "admin" else "일반"})</h2></div>', unsafe_allow_html=True)
+    else: st.header(f"제조본부 실시간 예약 현황")
+with col_logout:
+    if st.button("로그아웃"): st.session_state.role = None; st.rerun()
 
-    st.divider()
-    st.subheader("📋 현재 예약 대기 현황")
-    p_df = df[df["상태"].isin(["대기중", "반려"])] if not df.empty else pd.DataFrame()
-    if not p_df.empty:
-        d_df = p_df[['상태', '날짜', '시간', '신청자', '설비명 & 작업내용']].copy()
-        d_df['상태'] = d_df['상태'].replace({'대기중': '⏳ 대기', '반려': '❌ 반려'})
-        st.dataframe(d_df, use_container_width=True, hide_index=True)
-        cancel_opts = p_df.apply(lambda x: f"[{x['설비명 & 작업내용']}] {x['날짜']} {x['시간']} | {x['신청자']}", axis=1).tolist()
-        c_sel = st.selectbox("취소/삭제 대상 선택", cancel_opts, label_visibility="collapsed")
-        c_idx = cancel_opts.index(c_sel)
-        t_pw = str(p_df.iloc[c_idx]['비밀번호']).strip()
-        cpw = st.text_input("예약 비밀번호 입력", type="password", key="cpw")
-        if st.button("삭제하기"):
-            if str(cpw).strip() == t_pw:
-                df = df[df['ID'] != p_df.iloc[c_idx]['ID']]
-                conn.update(data=df); st.rerun()
-            else: st.error("비밀번호가 틀립니다.")
-    else: st.info("대기 중인 내역이 없습니다.")
+df['월별'] = pd.to_datetime(df['날짜'], errors='coerce').dt.strftime('%Y-%m')
+available_months = sorted(df['월별'].dropna().unique(), reverse=True)
 
-    st.divider()
-    st.subheader("🔑 관리자 메뉴")
-    if not st.session_state.admin_auth:
-        admin_pw_input = st.text_input("관리자 암호", type="password", label_visibility="collapsed")
-        if st.button("관리자 로그인"):
-            if admin_pw_input == "ati5344":
-                st.session_state.admin_auth = True
-                st.rerun()
-            else: st.error("비밀번호 틀림")
-    else:
-        if st.button("로그아웃"): st.session_state.admin_auth = False; st.rerun()
-        tab1, tab2 = st.tabs(["🆕 승인 및 관리", "✏️ 수정"])
-        with tab1:
-            a_p_df = df[df["상태"] == "대기중"]
-            if not a_p_df.empty:
-                a_opts = a_p_df.apply(lambda x: f"[{x['설비명 & 작업내용']}] {x['날짜']} {x['신청자']}", axis=1).tolist()
-                a_sel = st.selectbox("승인 대상 선택", a_opts)
-                a_idx = a_opts.index(a_sel)
-                a_id = a_p_df.iloc[a_idx]['ID']
-                row = a_p_df.iloc[a_idx]
-                r_date = datetime.datetime.strptime(row['날짜'], "%Y-%m-%d").date()
-                r_time = datetime.datetime.strptime(row['시간'], "%H:%M").time()
-                is_overlap, msg = check_overlap(r_date, r_time, row['소요시간'], df)
-                if is_overlap: st.warning(f"참고: {msg}")
-                
-                # --- 🚨 업데이트 2: 관리자 메뉴에 삭제 버튼 추가 ---
-                c1, c2, c3 = st.columns(3)
-                if c1.button("✅ 승인", use_container_width=True):
-                    df.loc[df['ID'] == a_id, '상태'] = '승인완료'; conn.update(data=df); st.rerun()
-                if c2.button("❌ 반려", use_container_width=True):
-                    df.loc[df['ID'] == a_id, '상태'] = '반려'; conn.update(data=df); st.rerun()
-                if c3.button("🗑️ 삭제", use_container_width=True):
-                    df = df[df['ID'] != a_id]; conn.update(data=df); st.rerun()
-            else: st.info("대기 건 없음")
+# ==========================================
+# 👤 일반 사용자 뷰
+# ==========================================
+if st.session_state.role == 'user':
+    col_form, col_list = st.columns([4, 6])
+    
+    with col_form:
+        st.subheader("작업 예약 신청")
+        with st.form("user_input_form", clear_on_submit=True):
+            name = st.text_input("신청자 이름", placeholder="예: 신아테크")
+            category = st.selectbox("작업 분류", CATEGORIES, format_func=lambda x: f"{EMOJI_MAP.get(x, '')} {x}")
+            equip = st.text_input("설비명 & 작업내용", placeholder="예: 대덕 PINE2S 빌드업")
+            date = st.date_input("작업 희망 날짜")
+            time_type = st.radio("시간 구분", ["오전", "오후", "종일"], horizontal=True)
+            note = st.text_area("비고 (요청사항)", placeholder="예: 오후 3시까지 완료 희망합니다.")
+            res_pw = st.text_input("예약 비밀번호 (수정/삭제용)", type="password")
             
-        with tab2:
-            today = datetime.date.today()
-            this_monday = today - timedelta(days=today.weekday())
-            a_list = df[(df["상태"] == "승인완료") & (pd.to_datetime(df["날짜"]).dt.date >= this_monday)]
-            if not a_list.empty:
-                e_opts = a_list.apply(lambda x: f"[{x['설비명 & 작업내용']}] {x['날짜']} {x['신청자']}", axis=1).tolist()
-                e_sel = st.selectbox("수정 대상 선택", e_opts)
-                e_row = a_list.iloc[e_opts.index(e_sel)]
-                with st.expander("📝 상세 일정 변경", expanded=True):
-                    new_eq = st.text_input("설비명 & 작업내용 수정", value=e_row['설비명 & 작업내용'])
-                    c_date, c_time = st.columns(2)
-                    new_d = c_date.date_input("날짜", value=pd.to_datetime(e_row['날짜']))
-                    h, m = map(int, e_row['시간'].split(':'))
-                    new_t = c_time.time_input("시간", value=datetime.time(h, m), step=1800)
-                    new_dur = st.selectbox("소요시간", ["1시간", "2시간", "3시간", "4시간", "5시간 이상"], index=["1시간", "2시간", "3시간", "4시간", "5시간 이상"].index(e_row['소요시간']) if e_row['소요시간'] in ["1시간", "2시간", "3시간", "4시간", "5시간 이상"] else 0)
-                    
-                    if st.button("💾 모든 변경 내용 저장"):
-                        is_ov, m_ov = check_overlap(new_d, new_t, new_dur, df, ignore_id=e_row['ID'])
-                        if is_ov: st.error(m_ov)
-                        else:
-                            idx = df[df['ID'] == e_row['ID']].index[0]
-                            df.at[idx, '설비명 & 작업내용'] = new_eq
-                            df.at[idx, '날짜'] = str(new_d)
-                            df.at[idx, '시간'] = str(new_t)[:5]
-                            df.at[idx, '소요시간'] = new_dur
-                            conn.update(data=df); st.success("수정 완료!"); st.rerun()
-                    
-                    # 관리자 메뉴(수정 탭) 하단에도 일정 삭제 버튼 추가
-                    if st.button("🗑️ 이 예약 강제 삭제하기"):
-                        df = df[df['ID'] != e_row['ID']]; conn.update(data=df); st.rerun()
-            else: st.info("수정 가능한 일정이 없습니다.")
+            if st.form_submit_button("신청하기", type="primary", use_container_width=True):
+                if not name or not equip or not res_pw: st.error("신청자, 작업내용, 비밀번호는 필수입니다.")
+                else:
+                    new_data = pd.DataFrame([{
+                        "신청자": name, "분류": category, "설비명 & 작업내용": equip, 
+                        "날짜": str(date), "시간구분": time_type, "비고": note, 
+                        "비밀번호": str(res_pw), "상태": "대기중", 
+                        "ID": str(pd.Timestamp.now().strftime("%Y%m%d%H%M%S")),
+                        "등록일시": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"))
+                    }])
+                    conn.update(data=pd.concat([df, new_data], ignore_index=True))
+                    st.success("✅ 신청이 완료되었습니다. 관리자 승인을 대기합니다."); st.rerun()
 
-# 📌 좌측 영역 (달력)
-with col_left:
-    st.subheader("📅 예약 현황 달력")
-    events = []
-    if not df.empty:
-        app_df = df[df["상태"] == "승인완료"]
-        for _, r in app_df.iterrows():
-            try:
-                start_dt = datetime.datetime.strptime(f"{r['날짜']} {r['시간']}", "%Y-%m-%d %H:%M")
-                dur_h = int(r['소요시간'][0]) if r['소요시간'][0].isdigit() else 1
-                end_dt = start_dt + timedelta(hours=dur_h)
+    with col_list:
+        st.subheader("전체 접수 내역")
+        selected_month = st.selectbox("조회할 월 선택", ["전체 보기"] + available_months, key="user_month")
+        view_df = df.copy()
+        if selected_month != "전체 보기": view_df = view_df[view_df['월별'] == selected_month]
+        
+        if view_df.empty:
+            st.info("해당 월에 접수된 내역이 없습니다.")
+        else:
+            t_wait, t_app, t_rej = st.tabs(["승인 대기", "승인 완료", "반려됨"])
+            disp_cols = ["분류", "설비명 & 작업내용", "신청자", "날짜", "시간구분", "상태"]
+            
+            with t_wait: st.dataframe(view_df[view_df['상태'] == '대기중'][disp_cols], hide_index=True, use_container_width=True)
+            with t_app: st.dataframe(view_df[view_df['상태'] == '승인완료'][disp_cols], hide_index=True, use_container_width=True)
+            with t_rej: st.dataframe(view_df[view_df['상태'] == '반려'][disp_cols], hide_index=True, use_container_width=True)
+            
+            st.divider()
+            st.subheader("내 예약 수정 및 삭제")
+            my_opts = view_df.apply(lambda x: f"[{x['분류']}] {x['설비명 & 작업내용']} | {x['날짜']} ({x['상태']})", axis=1).tolist()
+            if my_opts:
+                sel_opt = st.selectbox("수정/삭제할 예약 선택", my_opts)
+                sel_idx = my_opts.index(sel_opt)
+                target_row = view_df.iloc[sel_idx]
+                target_id = target_row['ID']
                 
-                applicant_name = str(r['신청자'])
-                event_color = get_color_by_name(applicant_name)
+                auth_pw = st.text_input("해당 예약의 비밀번호 입력", type="password", key="user_auth_pw")
                 
-                events.append({
-                    "title": f"[{r['설비명 & 작업내용']}] {applicant_name}", 
-                    "start": start_dt.strftime("%Y-%m-%dT%H:%M"), 
-                    "end": end_dt.strftime("%Y-%m-%dT%H:%M"), 
-                    "color": event_color, 
-                    "extendedProps": {
-                        "applicant": applicant_name, 
-                        "equip": str(r['설비명 & 작업내용']), 
-                        "duration": str(r['소요시간']), 
-                        "status": str(r['상태']),
-                        # --- 🚨 업데이트 3: 달력 팝업에 고유 ID 전달 ---
-                        "id": str(r['ID']) 
-                    }
-                })
-            except: continue
-    res = calendar(events=events, options={"headerToolbar": {"left": "today prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek,timeGridDay"}, "initialView": "dayGridMonth", "locale": "ko", "slotMinTime": "06:00:00", "slotMaxTime": "22:00:00"})
-    if res.get("eventClick"): show_event_popup(res["eventClick"]["event"])
+                with st.expander("일정 세부 내용 수정하기"):
+                    e_cat = st.selectbox("분류", CATEGORIES, index=CATEGORIES.index(target_row['분류']) if target_row['분류'] in CATEGORIES else 0, format_func=lambda x: f"{EMOJI_MAP.get(x, '')} {x}")
+                    e_eq = st.text_input("작업내용", value=target_row['설비명 & 작업내용'])
+                    e_d = st.date_input("날짜", value=pd.to_datetime(target_row['날짜']))
+                    e_t = st.radio("시간구분", ["오전", "오후", "종일"], index=["오전", "오후", "종일"].index(target_row['시간구분']) if target_row['시간구분'] in ["오전", "오후", "종일"] else 0, horizontal=True)
+                    e_n = st.text_area("비고", value=target_row.get('비고', ''))
+                    
+                    if st.button("변경 내용 저장"):
+                        if auth_pw == str(target_row['비밀번호']):
+                            df_idx = df[df['ID'] == target_id].index[0]
+                            df.at[df_idx, '분류'] = e_cat
+                            df.at[df_idx, '설비명 & 작업내용'] = e_eq
+                            df.at[df_idx, '날짜'] = str(e_d)
+                            df.at[df_idx, '시간구분'] = e_t
+                            df.at[df_idx, '비고'] = e_n
+                            conn.update(data=df); st.success("수정되었습니다."); st.rerun()
+                        else: st.error("비밀번호가 틀립니다.")
+                
+                if st.button("이 예약 삭제하기"):
+                    if auth_pw == str(target_row['비밀번호']):
+                        df = df[df['ID'] != target_id]; conn.update(data=df); st.success("삭제되었습니다."); st.rerun()
+                    else: st.error("비밀번호가 틀립니다.")
+
+# ==========================================
+# 👑 관리자 뷰
+# ==========================================
+elif st.session_state.role == 'admin':
+    
+    if "check_all" not in st.session_state:
+        st.session_state.check_all = True
+        for cat in CATEGORIES:
+            st.session_state[f"chk_{cat}"] = True
+
+    def toggle_all():
+        val = st.session_state.check_all
+        for cat in CATEGORIES:
+            st.session_state[f"chk_{cat}"] = val
+
+    def toggle_one():
+        st.session_state.check_all = all(st.session_state.get(f"chk_{c}", False) for c in CATEGORIES)
+
+    col_admin_cal, col_admin_list = st.columns([6, 4])
+    
+    with col_admin_cal:
+        # 🚨 업데이트: 컨테이너로 체크박스를 예쁜 테두리 박스로 감싸기
+        with st.container(border=True):
+            st.markdown("###### 달력 표시 필터")
+            st.checkbox("전체 선택", key="check_all", on_change=toggle_all)
+            st.divider() # 가로줄 추가로 깔끔함 유지
+            
+            c1, c2, c3, c4 = st.columns(4)
+            cols_list = [c1, c2, c3, c4]
+            cal_filter = []
+            for i, cat in enumerate(CATEGORIES):
+                with cols_list[i % 4]:
+                    if st.checkbox(f"{EMOJI_MAP.get(cat, '')} {cat}", key=f"chk_{cat}", on_change=toggle_one):
+                        cal_filter.append(cat)
+
+        st.write("") 
+        events = []
+        if not df.empty:
+            app_df = df[(df["상태"] == "승인완료") & (df['분류'].isin(cal_filter))]
+            for _, r in app_df.iterrows():
+                try:
+                    d_str = str(r['날짜'])
+                    if r['시간구분'] == '오전': s_dt, e_dt = f"{d_str}T09:00:00", f"{d_str}T13:00:00"
+                    elif r['시간구분'] == '오후': s_dt, e_dt = f"{d_str}T13:00:00", f"{d_str}T18:00:00"
+                    else: s_dt, e_dt = f"{d_str}T09:00:00", f"{d_str}T18:00:00"
+                    
+                    events.append({
+                        "title": f"[{r['분류']}] {r['설비명 & 작업내용']} - {r['신청자']}", 
+                        "start": s_dt, "end": e_dt, 
+                        "color": get_color_by_category(r['분류']), 
+                        "display": "block", 
+                        "extendedProps": {
+                            "category": str(r['분류']), "applicant": str(r['신청자']), 
+                            "equip": str(r['설비명 & 작업내용']), "date": d_str, 
+                            "time_type": str(r['시간구분']), "note": str(r.get('비고', '')),
+                            "status": str(r['상태']), "id": str(r['ID']) 
+                        }
+                    })
+                except: continue
+                
+        res = calendar(events=events, options={"headerToolbar": {"left": "prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "dayGridMonth", "locale": "ko", "height": 650}, key="admin_cal")
+        if res.get("eventClick"): show_event_popup(res["eventClick"]["event"])
+
+    with col_admin_list:
+        st.markdown("##### 예약 통합 관리")
+        # 🚨 업데이트: 관리자 전용 수정 탭 추가
+        t_wait, t_edit, t_list = st.tabs(["결재 대기", "일정 수정", "월별 내역"])
+        
+        with t_wait:
+            wait_df = df[df["상태"] == "대기중"]
+            if not wait_df.empty:
+                w_opts = wait_df.apply(lambda x: f"[{x['분류']}] {x['설비명 & 작업내용']} | {x['날짜']} - {x['신청자']}", axis=1).tolist()
+                w_sel = st.selectbox("결재할 항목 선택", w_opts)
+                w_idx = w_opts.index(w_sel)
+                w_id = wait_df.iloc[w_idx]['ID']
+                w_note = wait_df.iloc[w_idx].get('비고', '')
+                if w_note: st.info(f"신청자 비고: {w_note}")
+                
+                c1, c2, c3 = st.columns(3)
+                if c1.button("승인", use_container_width=True):
+                    df.loc[df['ID'] == w_id, '상태'] = '승인완료'; conn.update(data=df); st.rerun()
+                if c2.button("반려", use_container_width=True):
+                    df.loc[df['ID'] == w_id, '상태'] = '반려'; conn.update(data=df); st.rerun()
+                if c3.button("삭제", use_container_width=True):
+                    df = df[df['ID'] != w_id]; conn.update(data=df); st.rerun()
+            else: st.success("현재 대기 중인 항목이 없습니다.")
+
+        with t_edit:
+            admin_opts = df.apply(lambda x: f"[{x['상태']}] {x['설비명 & 작업내용']} | {x['날짜']} - {x['신청자']}", axis=1).tolist()
+            if admin_opts:
+                a_sel = st.selectbox("수정할 예약 전체 목록 (비밀번호 불필요)", admin_opts)
+                a_idx = admin_opts.index(a_sel)
+                a_row = df.iloc[a_idx]
+                a_id = a_row['ID']
+                
+                with st.expander("세부 내용 수정", expanded=True):
+                    a_cat = st.selectbox("분류", CATEGORIES, index=CATEGORIES.index(a_row['분류']) if a_row['분류'] in CATEGORIES else 0, format_func=lambda x: f"{EMOJI_MAP.get(x, '')} {x}", key="admin_edit_cat")
+                    a_eq = st.text_input("작업내용", value=a_row['설비명 & 작업내용'], key="admin_edit_eq")
+                    a_d = st.date_input("날짜", value=pd.to_datetime(a_row['날짜']), key="admin_edit_d")
+                    a_t = st.radio("시간구분", ["오전", "오후", "종일"], index=["오전", "오후", "종일"].index(a_row['시간구분']) if a_row['시간구분'] in ["오전", "오후", "종일"] else 0, horizontal=True, key="admin_edit_t")
+                    a_n = st.text_area("비고", value=a_row.get('비고', ''), key="admin_edit_n")
+                    
+                    if st.button("관리자 권한으로 변경 내용 저장"):
+                        df_idx = df[df['ID'] == a_id].index[0]
+                        df.at[df_idx, '분류'] = a_cat
+                        df.at[df_idx, '설비명 & 작업내용'] = a_eq
+                        df.at[df_idx, '날짜'] = str(a_d)
+                        df.at[df_idx, '시간구분'] = a_t
+                        df.at[df_idx, '비고'] = a_n
+                        conn.update(data=df); st.success("수정되었습니다."); st.rerun()
+
+        with t_list:
+            admin_month = st.selectbox("조회할 월(Month) 선택", ["전체 보기"] + available_months, key="admin_month")
+            view_df = df.copy()
+            if admin_month != "전체 보기": view_df = view_df[view_df['월별'] == admin_month]
+            
+            disp_cols_admin = ["등록일시", "분류", "설비명 & 작업내용", "신청자", "날짜", "상태"]
+            st.dataframe(view_df[disp_cols_admin], hide_index=True, use_container_width=True, height=450)

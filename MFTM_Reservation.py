@@ -8,12 +8,12 @@ import base64
 
 # --- 설정 및 기초 함수 ---
 LOGO_PATH = "ati_logo.png" 
-CATEGORIES = ["클리닝", "패킹&출하", "도킹", "RND설치", "작업의뢰", "빌드업", "입고", "기타"]
+CATEGORIES = ["클리닝", "패킹&출하", "도킹", "RND설치", "작업의뢰", "빌드업", "입고", "VAD", "기타"]
 
 EMOJI_MAP = {
     "클리닝": "🔴", "패킹&출하": "🟠", "도킹": "🟡", 
     "RND설치": "🟢", "작업의뢰": "🔵", "빌드업": "🟣", 
-    "입고": "🟤", "기타": "⚫"
+    "입고": "🟤", "VAD": "⚪", "기타": "⚫"
 }
 
 def get_base64_image(image_path):
@@ -26,20 +26,46 @@ def get_color_by_category(category):
     colors = {
         "클리닝": "#FF4B4B", "패킹&출하": "#FF9900", "도킹": "#E6B800", 
         "RND설치": "#2E8B57", "작업의뢰": "#1E90FF", "빌드업": "#4B0082", 
-        "입고": "#8D6E63", "기타": "#555555"
+        "입고": "#8D6E63", "VAD": "#00CED1", "기타": "#555555"
     }
     return colors.get(category, "#757575")
 
 st.set_page_config(page_title="제조본부 예약 시스템", layout="wide", page_icon="ati_logo.png")
 
+# 🚨 업데이트: 8:2 비율에 맞춘 체크박스 압축 및 버튼 쌍둥이 동기화, 특정 박스 회색 칠하기 CSS
 st.markdown(
     """
     <style>
-    .title-wrapper { display: flex; align-items: center; justify-content: flex-start; gap: 20px; margin-bottom: 30px; }
+    .title-wrapper { display: flex; align-items: center; justify-content: flex-start; gap: 20px; margin-bottom: 20px; }
     .logo-img { height: 60px; width: auto; object-fit: contain; }
     .main-title { font-size: 2.5rem; font-weight: bold; margin: 0; }
-    /* 라디오 버튼 간격 살짝 띄우기 */
     .stRadio > div { gap: 15px; } 
+    
+    /* 체크박스 글자 크기 및 여백 극한 축소 (좁은 화면 대응) */
+    [data-testid="stCheckbox"] p { font-size: 0.6rem !important; }
+    [data-testid="stCheckbox"] { margin-top: -10px !important; margin-bottom: -10px !important; }
+    
+    /* 🚨 마법의 코드: 'filter-marker'를 포함한 컨테이너만 회색으로 칠하기 */
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.filter-marker) { 
+        padding: 0.8rem !important; 
+        background-color: #f0f2f6 !important; 
+        border-color: #f0f2f6 !important;
+        border-radius: 0.5rem;
+    }
+    
+    /* 🚨 관리자 뱃지와 로그아웃 버튼 100% 쌍둥이 동기화 */
+    .role-badge {
+        display: flex; align-items: center; justify-content: center;
+        border: 1px solid rgba(49, 51, 63, 0.2); border-radius: 0.5rem; 
+        font-size: 1rem; color: #31333F; background-color: white; 
+        height: 42px; width: 100%; box-sizing: border-box; 
+        font-weight: 400; /* 기본 버튼과 같은 폰트 굵기 */
+    }
+    div[data-testid="stButton"] > button { 
+        height: 42px; font-size: 1rem; width: 100%;
+        border: 1px solid rgba(49, 51, 63, 0.2);
+        padding: 0; margin: 0;
+    }
     </style>
     """, unsafe_allow_html=True
 )
@@ -60,25 +86,24 @@ except Exception:
     df = pd.DataFrame(columns=["신청자", "분류", "설비명 & 작업내용", "날짜", "시간구분", "비고", "비밀번호", "상태", "ID", "등록일시"])
 
 # --- 팝업 (관리자 달력용) ---
-@st.dialog("📅 예약 상세 정보")
+@st.dialog("예약 상세 정보")
 def show_event_popup(event_data):
     global df, conn
     props = event_data.get("extendedProps", {})
     target_id = props.get("id", "")
     
-    st.markdown(f"**🏷️ 분류:** {props.get('category', '')}")
-    st.markdown(f"**🏢 신청자:** {props.get('applicant', '')}")
-    st.markdown(f"**🚜 설비명 & 작업내용:** {props.get('equip', '')}")
-    st.markdown(f"**⏰ 요청 일정:** {props.get('date', '')} ({props.get('time_type', '')})")
-    st.markdown(f"**📝 비고(요청사항):** {props.get('note', '없음')}")
-    st.markdown(f"**✅ 상태:** {props.get('status', '')}")
+    st.markdown(f"**분류:** {props.get('category', '')}")
+    st.markdown(f"**신청자:** {props.get('applicant', '')}")
+    st.markdown(f"**설비명 & 작업내용:** {props.get('equip', '')}")
+    st.markdown(f"**요청 일정:** {props.get('date', '')} ({props.get('time_type', '')})")
+    st.markdown(f"**비고(요청사항):** {props.get('note', '없음')}")
+    st.markdown(f"**상태:** {props.get('status', '')}")
 
     if st.session_state.role == 'admin' and target_id:
         st.divider()
-        st.markdown("🛠️ **관리자 액션**")
+        st.markdown("**관리자 액션**")
         
-        # 🚨 업데이트: 관리자는 팝업에서도 바로 수정 가능!
-        with st.expander("✏️ 이 예약 내용 수정하기"):
+        with st.expander("이 예약 내용 수정하기"):
             target_idx = df[df['ID'] == target_id].index
             if not target_idx.empty:
                 e_row = df.loc[target_idx[0]]
@@ -88,7 +113,7 @@ def show_event_popup(event_data):
                 e_t = st.radio("시간구분", ["오전", "오후", "종일"], index=["오전", "오후", "종일"].index(e_row['시간구분']) if e_row['시간구분'] in ["오전", "오후", "종일"] else 0, horizontal=True, key="pop_t")
                 e_n = st.text_area("비고", value=e_row.get('비고', ''), key="pop_n")
                 
-                if st.button("💾 수정 내용 저장", key="pop_save"):
+                if st.button("수정 내용 저장", key="pop_save"):
                     df.at[target_idx[0], '분류'] = e_cat
                     df.at[target_idx[0], '설비명 & 작업내용'] = e_eq
                     df.at[target_idx[0], '날짜'] = str(e_d)
@@ -96,7 +121,7 @@ def show_event_popup(event_data):
                     df.at[target_idx[0], '비고'] = e_n
                     conn.update(data=df); st.success("수정되었습니다."); st.rerun()
 
-        if st.button("🗑️ 이 예약 강제 삭제하기", use_container_width=True):
+        if st.button("이 예약 강제 삭제하기", use_container_width=True):
             df = df[df['ID'] != target_id]; conn.update(data=df)
             st.success("삭제되었습니다."); st.rerun()
 
@@ -119,13 +144,20 @@ if st.session_state.role is None:
     st.stop()
 
 # --- 헤더 ---
-col_logo, col_logout = st.columns([8, 1])
+col_logo, col_role, col_logout = st.columns([8.2, 0.9, 0.9])
+
 with col_logo:
     img_b64 = get_base64_image(LOGO_PATH)
-    if img_b64: st.markdown(f'<div class="title-wrapper" style="margin-bottom:10px;"><img src="data:image/png;base64,{img_b64}" class="logo-img" style="height:40px;"><h2 style="margin:0;">제조본부 실시간 예약 현황 ({"관리자" if st.session_state.role == "admin" else "일반"})</h2></div>', unsafe_allow_html=True)
+    if img_b64: st.markdown(f'<div class="title-wrapper"><img src="data:image/png;base64,{img_b64}" class="logo-img" style="height:40px;"><h2 style="margin:0;">제조본부 실시간 예약 현황</h2></div>', unsafe_allow_html=True)
     else: st.header(f"제조본부 실시간 예약 현황")
+
+with col_role:
+    # 🚨 업데이트: 이모티콘 제거 및 텍스트만 깔끔하게 표시
+    role_text = "관리자" if st.session_state.role == "admin" else "일반"
+    st.markdown(f'<div class="role-badge">{role_text}</div>', unsafe_allow_html=True)
+
 with col_logout:
-    if st.button("로그아웃"): st.session_state.role = None; st.rerun()
+    if st.button("로그아웃", use_container_width=True): st.session_state.role = None; st.rerun()
 
 df['월별'] = pd.to_datetime(df['날짜'], errors='coerce').dt.strftime('%Y-%m')
 available_months = sorted(df['월별'].dropna().unique(), reverse=True)
@@ -228,27 +260,16 @@ elif st.session_state.role == 'admin':
     def toggle_one():
         st.session_state.check_all = all(st.session_state.get(f"chk_{c}", False) for c in CATEGORIES)
 
-    col_admin_cal, col_admin_list = st.columns([6, 4])
+    # 🚨 업데이트: 비율 8:2로 과감한 화면 분할
+    col_admin_cal, col_admin_list = st.columns([8, 2])
     
+    # 📌 [좌측 영역] 달력 전용 (80% 차지)
     with col_admin_cal:
-        # 🚨 업데이트: 컨테이너로 체크박스를 예쁜 테두리 박스로 감싸기
-        with st.container(border=True):
-            st.markdown("###### 달력 표시 필터")
-            st.checkbox("전체 선택", key="check_all", on_change=toggle_all)
-            st.divider() # 가로줄 추가로 깔끔함 유지
-            
-            c1, c2, c3, c4 = st.columns(4)
-            cols_list = [c1, c2, c3, c4]
-            cal_filter = []
-            for i, cat in enumerate(CATEGORIES):
-                with cols_list[i % 4]:
-                    if st.checkbox(f"{EMOJI_MAP.get(cat, '')} {cat}", key=f"chk_{cat}", on_change=toggle_one):
-                        cal_filter.append(cat)
-
-        st.write("") 
         events = []
+        active_filters = [cat for cat in CATEGORIES if st.session_state.get(f"chk_{cat}", False)]
+        
         if not df.empty:
-            app_df = df[(df["상태"] == "승인완료") & (df['분류'].isin(cal_filter))]
+            app_df = df[(df["상태"] == "승인완료") & (df['분류'].isin(active_filters))]
             for _, r in app_df.iterrows():
                 try:
                     d_str = str(r['날짜'])
@@ -270,12 +291,29 @@ elif st.session_state.role == 'admin':
                     })
                 except: continue
                 
-        res = calendar(events=events, options={"headerToolbar": {"left": "prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "dayGridMonth", "locale": "ko", "height": 650}, key="admin_cal")
+        res = calendar(events=events, options={"headerToolbar": {"left": "prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "dayGridMonth", "locale": "ko", "height": 750}, key="admin_cal")
         if res.get("eventClick"): show_event_popup(res["eventClick"]["event"])
 
+    # 📌 [우측 영역] 필터 박스 및 예약 통합 관리 (20% 차지)
     with col_admin_list:
+        
+        # 🚨 업데이트: filter-marker 클래스를 심어서 이 박스만 회색으로 칠함
+        with st.container(border=True):
+            st.markdown('<div class="filter-marker"></div>', unsafe_allow_html=True)
+            st.checkbox("☑️ 전체 (ALL)", key="check_all", on_change=toggle_all)
+            
+            # 🚨 업데이트: 전체선택 제외하고 순서대로 3열씩 딱 맞게 배열
+            for i in range(0, len(CATEGORIES), 3):
+                cols = st.columns(3)
+                for j in range(3):
+                    if i + j < len(CATEGORIES):
+                        cat = CATEGORIES[i + j]
+                        with cols[j]:
+                            st.checkbox(f"{EMOJI_MAP.get(cat, '')} {cat}", key=f"chk_{cat}", on_change=toggle_one)
+
+        st.write("") 
+        
         st.markdown("##### 예약 통합 관리")
-        # 🚨 업데이트: 관리자 전용 수정 탭 추가
         t_wait, t_edit, t_list = st.tabs(["결재 대기", "일정 수정", "월별 내역"])
         
         with t_wait:

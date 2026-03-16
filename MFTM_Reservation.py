@@ -32,7 +32,6 @@ def get_color_by_category(category):
 
 st.set_page_config(page_title="제조본부 예약 시스템", layout="wide", page_icon="ati_logo.png")
 
-# 🚨 업데이트: 8:2 비율에 맞춘 체크박스 압축 및 버튼 쌍둥이 동기화, 특정 박스 회색 칠하기 CSS
 st.markdown(
     """
     <style>
@@ -41,11 +40,9 @@ st.markdown(
     .main-title { font-size: 2.5rem; font-weight: bold; margin: 0; }
     .stRadio > div { gap: 15px; } 
     
-    /* 체크박스 글자 크기 및 여백 극한 축소 (좁은 화면 대응) */
-    [data-testid="stCheckbox"] p { font-size: 0.6rem !important; }
+    [data-testid="stCheckbox"] p { font-size: 0.8rem !important; }
     [data-testid="stCheckbox"] { margin-top: -10px !important; margin-bottom: -10px !important; }
     
-    /* 🚨 마법의 코드: 'filter-marker'를 포함한 컨테이너만 회색으로 칠하기 */
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.filter-marker) { 
         padding: 0.8rem !important; 
         background-color: #f0f2f6 !important; 
@@ -53,13 +50,12 @@ st.markdown(
         border-radius: 0.5rem;
     }
     
-    /* 🚨 관리자 뱃지와 로그아웃 버튼 100% 쌍둥이 동기화 */
     .role-badge {
         display: flex; align-items: center; justify-content: center;
         border: 1px solid rgba(49, 51, 63, 0.2); border-radius: 0.5rem; 
         font-size: 1rem; color: #31333F; background-color: white; 
         height: 42px; width: 100%; box-sizing: border-box; 
-        font-weight: 400; /* 기본 버튼과 같은 폰트 굵기 */
+        font-weight: 400; 
     }
     div[data-testid="stButton"] > button { 
         height: 42px; font-size: 1rem; width: 100%;
@@ -101,7 +97,7 @@ def show_event_popup(event_data):
 
     if st.session_state.role == 'admin' and target_id:
         st.divider()
-        st.markdown("**관리자 액션**")
+        st.markdown("🛠️ **관리자 액션**")
         
         with st.expander("이 예약 내용 수정하기"):
             target_idx = df[df['ID'] == target_id].index
@@ -121,7 +117,7 @@ def show_event_popup(event_data):
                     df.at[target_idx[0], '비고'] = e_n
                     conn.update(data=df); st.success("수정되었습니다."); st.rerun()
 
-        if st.button("이 예약 강제 삭제하기", use_container_width=True):
+        if st.button("🗑️ 이 예약 강제 삭제하기", use_container_width=True):
             df = df[df['ID'] != target_id]; conn.update(data=df)
             st.success("삭제되었습니다."); st.rerun()
 
@@ -152,7 +148,6 @@ with col_logo:
     else: st.header(f"제조본부 실시간 예약 현황")
 
 with col_role:
-    # 🚨 업데이트: 이모티콘 제거 및 텍스트만 깔끔하게 표시
     role_text = "관리자" if st.session_state.role == "admin" else "일반"
     st.markdown(f'<div class="role-badge">{role_text}</div>', unsafe_allow_html=True)
 
@@ -260,10 +255,8 @@ elif st.session_state.role == 'admin':
     def toggle_one():
         st.session_state.check_all = all(st.session_state.get(f"chk_{c}", False) for c in CATEGORIES)
 
-    # 🚨 업데이트: 비율 8:2로 과감한 화면 분할
     col_admin_cal, col_admin_list = st.columns([8, 2])
     
-    # 📌 [좌측 영역] 달력 전용 (80% 차지)
     with col_admin_cal:
         events = []
         active_filters = [cat for cat in CATEGORIES if st.session_state.get(f"chk_{cat}", False)]
@@ -277,8 +270,9 @@ elif st.session_state.role == 'admin':
                     elif r['시간구분'] == '오후': s_dt, e_dt = f"{d_str}T13:00:00", f"{d_str}T18:00:00"
                     else: s_dt, e_dt = f"{d_str}T09:00:00", f"{d_str}T18:00:00"
                     
+                    # 🚨 업데이트: 시간(오전/오후/종일)을 괄호로 묶어서 맨 끝으로 배치
                     events.append({
-                        "title": f"[{r['분류']}] {r['설비명 & 작업내용']} - {r['신청자']}", 
+                        "title": f"[{r['분류']}] {r['설비명 & 작업내용']} - {r['신청자']} ({r['시간구분']})", 
                         "start": s_dt, "end": e_dt, 
                         "color": get_color_by_category(r['분류']), 
                         "display": "block", 
@@ -291,18 +285,16 @@ elif st.session_state.role == 'admin':
                     })
                 except: continue
                 
-        res = calendar(events=events, options={"headerToolbar": {"left": "prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "dayGridMonth", "locale": "ko", "height": 750}, key="admin_cal")
+        # 🚨 업데이트: displayEventTime: False 추가하여 기본 시간 표시 제거
+        res = calendar(events=events, options={"headerToolbar": {"left": "prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "dayGridMonth", "locale": "ko", "height": 750, "displayEventTime": False}, key="admin_cal")
         if res.get("eventClick"): show_event_popup(res["eventClick"]["event"])
 
-    # 📌 [우측 영역] 필터 박스 및 예약 통합 관리 (20% 차지)
     with col_admin_list:
         
-        # 🚨 업데이트: filter-marker 클래스를 심어서 이 박스만 회색으로 칠함
         with st.container(border=True):
             st.markdown('<div class="filter-marker"></div>', unsafe_allow_html=True)
             st.checkbox("☑️ 전체 (ALL)", key="check_all", on_change=toggle_all)
             
-            # 🚨 업데이트: 전체선택 제외하고 순서대로 3열씩 딱 맞게 배열
             for i in range(0, len(CATEGORIES), 3):
                 cols = st.columns(3)
                 for j in range(3):

@@ -209,7 +209,25 @@ elif st.session_state.role == 'admin':
                     e_dt = f"{d_str}T13:00:00" if r['시간구분'] == '오전' else (f"{d_str}T18:00:00" if r['시간구분'] == '오후' else f"{d_str}T18:00:00")
                     events.append({"title": f"[{r['분류']}] {r['설비명 & 작업내용']} - {r['신청자']} ({r['시간구분']})", "start": s_dt, "end": e_dt, "color": get_color_by_category(r['분류']), "display": "block", "extendedProps": {"category": str(r['분류']), "applicant": str(r['신청자']), "equip": str(r['설비명 & 작업내용']), "date": d_str, "time_type": str(r['시간구분']), "note": str(r.get('비고', '')), "status": str(r['상태']), "id": str(r['ID'])}})
                 except: continue
-        res = calendar(events=events, options={"headerToolbar": {"left": "prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "dayGridMonth", "locale": "ko", "height": 750, "displayEventTime": False}, key="admin_cal")
+        today_str = datetime.date.today().isoformat()
+        calendar_custom_css = f"""
+        .fc-day-today {{
+            background-color: rgba(255, 75, 75, 0.12) !important;
+        }}
+        .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {{
+            background-color: #FF4B4B;
+            color: #ffffff;
+            font-weight: 700;
+            border-radius: 50%;
+            width: 26px;
+            height: 26px;
+            line-height: 26px;
+            text-align: center;
+            display: inline-block;
+            margin: 2px;
+        }}
+        """
+        res = calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "dayGridMonth", "locale": "ko", "height": 750, "displayEventTime": False, "now": today_str}, custom_css=calendar_custom_css, key="admin_cal")
         if res.get("eventClick"): show_event_popup(res["eventClick"]["event"])
 
     with col_admin_list:
@@ -226,8 +244,31 @@ elif st.session_state.role == 'admin':
         st.write("") 
         st.markdown("##### 예약 통합 관리")
         # 🚨 데이터 복구(Recovery) 탭 추가
-        t_wait, t_edit, t_list, t_recovery = st.tabs(["결재", "수정", "내역", "🔄 복구"])
-        
+        t_add, t_wait, t_edit, t_list, t_recovery = st.tabs(["📝 등록", "결재", "수정", "내역", "🔄 복구"])
+
+        with t_add:
+            st.caption("관리자가 직접 등록하는 일정은 결재 없이 바로 '승인완료' 상태로 등록됩니다.")
+            with st.form("admin_input_form", clear_on_submit=True):
+                ad_name = st.text_input("신청자 이름", key="ad_name")
+                ad_category = st.selectbox("작업 분류", CATEGORIES, format_func=lambda x: f"{EMOJI_MAP.get(x, '')} {x}", key="ad_cat")
+                ad_equip = st.text_input("설비명 & 작업내용", key="ad_eq")
+                ad_date = st.date_input("작업 날짜", key="ad_date")
+                ad_time_type = st.radio("시간 구분", ["오전", "오후", "종일"], horizontal=True, key="ad_time")
+                ad_note = st.text_area("비고 (요청사항)", key="ad_note")
+                ad_pw = st.text_input("비밀번호 (수정/삭제용)", type="password", value="0000", key="ad_pw")
+                if st.form_submit_button("바로 등록하기", type="primary", use_container_width=True):
+                    if not ad_name or not ad_equip:
+                        st.error("필수 항목 입력 누락")
+                    else:
+                        new_row = pd.DataFrame([{
+                            "신청자": ad_name, "분류": ad_category, "설비명 & 작업내용": ad_equip,
+                            "날짜": str(ad_date), "시간구분": ad_time_type, "비고": ad_note,
+                            "비밀번호": str(ad_pw) if ad_pw else "0000", "상태": "승인완료",
+                            "ID": str(pd.Timestamp.now().strftime("%Y%m%d%H%M%S")),
+                            "등록일시": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"))
+                        }])
+                        safe_update(pd.concat([df, new_row], ignore_index=True))
+
         with t_wait:
             wait_df = df[df["상태"] == "대기중"]
             if not wait_df.empty:

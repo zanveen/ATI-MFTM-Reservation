@@ -148,7 +148,7 @@ with col_logo:
     img_b64 = get_base64_image(LOGO_PATH)
     st.markdown(f'<div class="title-wrapper"><img src="data:image/png;base64,{img_b64}" class="logo-img" style="height:40px;"><h2 style="margin:0;">제조본부 실시간 예약 현황</h2></div>', unsafe_allow_html=True)
 with col_role:
-    ROLE_LABELS = {"admin": "관리자", "user": "일반", "viewer": "남혁(조회전용)"}
+    ROLE_LABELS = {"admin": "관리자", "user": "일반", "viewer": "남혁"}
     st.markdown(f'<div class="role-badge">{ROLE_LABELS.get(st.session_state.role, "일반")}</div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("로그아웃"): st.session_state.role = None; st.rerun()
@@ -187,7 +187,7 @@ if st.session_state.role == 'user':
         with t_rej: st.dataframe(view_df[view_df['상태'] == '반려'][["분류", "설비명 & 작업내용", "신청자", "날짜", "상태"]], hide_index=True, use_container_width=True)
 
 # ==========================================
-# 👑 관리자 / 조회전용(남혁) 뷰
+# 👑 관리자 / 남혁 뷰
 # ==========================================
 elif st.session_state.role in ('admin', 'viewer'):
     is_admin = st.session_state.role == 'admin'
@@ -327,6 +327,6 @@ elif st.session_state.role in ('admin', 'viewer'):
                 else:
                     st.info("복구 가능한 스냅샷이 없습니다. (현재 페이지 접속 후 변경 사항이 있어야 생성됨)")
         else:
-            # 🚨 남혁(조회전용) 계정: 일정표 확인만 가능, 승인/신규 등록 불가
+            # 🚨 남혁 계정: 일정표 확인만 가능, 승인/신규 등록 불가
             st.markdown("##### 조회 전용 계정")
-            st.info("이 계정은 일정표 확인만 가능합니다. 결재, 신규 등록, 수정, 삭제 권한이 없습니다.")
+            st.info("현재는 일정표 확인만 가능합니다. 결재, 신규 등록, 수정, 삭제는 관리자 계정만 가능합니다.")

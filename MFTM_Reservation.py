@@ -138,7 +138,8 @@ if st.session_state.role is None:
         login_pw = st.text_input("입장 비밀번호", type="password")
         if st.button("접속하기"):
             if login_pw == "1234": st.session_state.role = 'user'; st.rerun()
-            elif login_pw == "ati5344": st.session_state.role = 'admin'; st.rerun()
+            elif login_pw == "5344ati": st.session_state.role = 'admin'; st.rerun()
+            elif login_pw == "ati5344": st.session_state.role = 'viewer'; st.rerun()
             else: st.error("비밀번호 불일치")
     st.stop()
 
@@ -147,7 +148,8 @@ with col_logo:
     img_b64 = get_base64_image(LOGO_PATH)
     st.markdown(f'<div class="title-wrapper"><img src="data:image/png;base64,{img_b64}" class="logo-img" style="height:40px;"><h2 style="margin:0;">제조본부 실시간 예약 현황</h2></div>', unsafe_allow_html=True)
 with col_role:
-    st.markdown(f'<div class="role-badge">{"관리자" if st.session_state.role == "admin" else "일반"}</div>', unsafe_allow_html=True)
+    ROLE_LABELS = {"admin": "관리자", "user": "일반", "viewer": "남혁(조회전용)"}
+    st.markdown(f'<div class="role-badge">{ROLE_LABELS.get(st.session_state.role, "일반")}</div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("로그아웃"): st.session_state.role = None; st.rerun()
 
@@ -185,9 +187,10 @@ if st.session_state.role == 'user':
         with t_rej: st.dataframe(view_df[view_df['상태'] == '반려'][["분류", "설비명 & 작업내용", "신청자", "날짜", "상태"]], hide_index=True, use_container_width=True)
 
 # ==========================================
-# 👑 관리자 뷰
+# 👑 관리자 / 조회전용(남혁) 뷰
 # ==========================================
-elif st.session_state.role == 'admin':
+elif st.session_state.role in ('admin', 'viewer'):
+    is_admin = st.session_state.role == 'admin'
     if "check_all" not in st.session_state:
         st.session_state.check_all = True
         for cat in CATEGORIES: st.session_state[f"chk_{cat}"] = True
@@ -241,83 +244,89 @@ elif st.session_state.role == 'admin':
                         cat = CATEGORIES[i+j]
                         with cols[j]: st.checkbox(f"{EMOJI_MAP.get(cat, '')} {cat}", key=f"chk_{cat}")
 
-        st.write("") 
-        st.markdown("##### 예약 통합 관리")
-        # 🚨 데이터 복구(Recovery) 탭 추가
-        t_add, t_wait, t_edit, t_list, t_recovery = st.tabs(["📝 등록", "결재", "수정", "내역", "🔄 복구"])
+        st.write("")
 
-        with t_add:
-            st.caption("관리자가 직접 등록하는 일정은 결재 없이 바로 '승인완료' 상태로 등록됩니다.")
-            with st.form("admin_input_form", clear_on_submit=True):
-                ad_name = st.text_input("신청자 이름", key="ad_name")
-                ad_category = st.selectbox("작업 분류", CATEGORIES, format_func=lambda x: f"{EMOJI_MAP.get(x, '')} {x}", key="ad_cat")
-                ad_equip = st.text_input("설비명 & 작업내용", key="ad_eq")
-                ad_date = st.date_input("작업 날짜", key="ad_date")
-                ad_time_type = st.radio("시간 구분", ["오전", "오후", "종일"], horizontal=True, key="ad_time")
-                ad_note = st.text_area("비고 (요청사항)", key="ad_note")
-                ad_pw = st.text_input("비밀번호 (수정/삭제용)", type="password", value="0000", key="ad_pw")
-                if st.form_submit_button("바로 등록하기", type="primary", use_container_width=True):
-                    if not ad_name or not ad_equip:
-                        st.error("필수 항목 입력 누락")
-                    else:
-                        new_row = pd.DataFrame([{
-                            "신청자": ad_name, "분류": ad_category, "설비명 & 작업내용": ad_equip,
-                            "날짜": str(ad_date), "시간구분": ad_time_type, "비고": ad_note,
-                            "비밀번호": str(ad_pw) if ad_pw else "0000", "상태": "승인완료",
-                            "ID": str(pd.Timestamp.now().strftime("%Y%m%d%H%M%S")),
-                            "등록일시": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"))
-                        }])
-                        safe_update(pd.concat([df, new_row], ignore_index=True))
+        if is_admin:
+            st.markdown("##### 예약 통합 관리")
+            # 🚨 데이터 복구(Recovery) 탭 추가
+            t_add, t_wait, t_edit, t_list, t_recovery = st.tabs(["📝 등록", "결재", "수정", "내역", "🔄 복구"])
 
-        with t_wait:
-            wait_df = df[df["상태"] == "대기중"]
-            if not wait_df.empty:
-                w_sel = st.selectbox("결재 선택", wait_df.apply(lambda x: f"[{x['분류']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist())
-                w_id = wait_df.iloc[0]['ID'] # 실제로는 선택한 인덱스에 따라 ID 추출 필요
-                # 실제 선택한 항목의 ID 추출 로직
-                w_idx = wait_df.apply(lambda x: f"[{x['분류']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist().index(w_sel)
-                w_id = wait_df.iloc[w_idx]['ID']
-                
-                c1, c2, c3 = st.columns(3)
-                if c1.button("승인"):
-                    df.loc[df['ID'] == w_id, '상태'] = '승인완료'
-                    safe_update(df)
-                if c2.button("반려"):
-                    df.loc[df['ID'] == w_id, '상태'] = '반려'
-                    safe_update(df)
-                if c3.button("삭제"):
-                    safe_update(df[df['ID'] != w_id])
-            else: st.success("대기 없음")
+            with t_add:
+                st.caption("관리자가 직접 등록하는 일정은 결재 없이 바로 '승인완료' 상태로 등록됩니다.")
+                with st.form("admin_input_form", clear_on_submit=True):
+                    ad_name = st.text_input("신청자 이름", key="ad_name")
+                    ad_category = st.selectbox("작업 분류", CATEGORIES, format_func=lambda x: f"{EMOJI_MAP.get(x, '')} {x}", key="ad_cat")
+                    ad_equip = st.text_input("설비명 & 작업내용", key="ad_eq")
+                    ad_date = st.date_input("작업 날짜", key="ad_date")
+                    ad_time_type = st.radio("시간 구분", ["오전", "오후", "종일"], horizontal=True, key="ad_time")
+                    ad_note = st.text_area("비고 (요청사항)", key="ad_note")
+                    ad_pw = st.text_input("비밀번호 (수정/삭제용)", type="password", value="0000", key="ad_pw")
+                    if st.form_submit_button("바로 등록하기", type="primary", use_container_width=True):
+                        if not ad_name or not ad_equip:
+                            st.error("필수 항목 입력 누락")
+                        else:
+                            new_row = pd.DataFrame([{
+                                "신청자": ad_name, "분류": ad_category, "설비명 & 작업내용": ad_equip,
+                                "날짜": str(ad_date), "시간구분": ad_time_type, "비고": ad_note,
+                                "비밀번호": str(ad_pw) if ad_pw else "0000", "상태": "승인완료",
+                                "ID": str(pd.Timestamp.now().strftime("%Y%m%d%H%M%S")),
+                                "등록일시": str(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"))
+                            }])
+                            safe_update(pd.concat([df, new_row], ignore_index=True))
 
-        with t_edit:
-            a_sel = st.selectbox("수정 선택", df.apply(lambda x: f"[{x['상태']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist())
-            a_idx = df.apply(lambda x: f"[{x['상태']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist().index(a_sel)
-            a_id = df.iloc[a_idx]['ID']
-            with st.expander("내용 수정"):
-                row = df.iloc[a_idx]
-                nc = st.selectbox("분류 ", CATEGORIES, index=CATEGORIES.index(row['분류']) if row['분류'] in CATEGORIES else 0)
-                ne = st.text_input("작업내용 ", value=row['설비명 & 작업내용'])
-                nd = st.date_input("날짜 ", value=pd.to_datetime(row['날짜']))
-                if st.button("변경 저장"):
-                    df.at[a_idx, '분류'] = nc
-                    df.at[a_idx, '설비명 & 작업내용'] = ne
-                    df.at[a_idx, '날짜'] = str(nd)
-                    safe_update(df)
+            with t_wait:
+                wait_df = df[df["상태"] == "대기중"]
+                if not wait_df.empty:
+                    w_sel = st.selectbox("결재 선택", wait_df.apply(lambda x: f"[{x['분류']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist())
+                    w_id = wait_df.iloc[0]['ID'] # 실제로는 선택한 인덱스에 따라 ID 추출 필요
+                    # 실제 선택한 항목의 ID 추출 로직
+                    w_idx = wait_df.apply(lambda x: f"[{x['분류']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist().index(w_sel)
+                    w_id = wait_df.iloc[w_idx]['ID']
 
-        with t_list:
-            adm_month = st.selectbox("조회 월", ["전체 보기"] + available_months)
-            st.dataframe(df if adm_month == "전체 보기" else df[df['월별'] == adm_month], hide_index=True)
+                    c1, c2, c3 = st.columns(3)
+                    if c1.button("승인"):
+                        df.loc[df['ID'] == w_id, '상태'] = '승인완료'
+                        safe_update(df)
+                    if c2.button("반려"):
+                        df.loc[df['ID'] == w_id, '상태'] = '반려'
+                        safe_update(df)
+                    if c3.button("삭제"):
+                        safe_update(df[df['ID'] != w_id])
+                else: st.success("대기 없음")
 
-        # 🚨 [복구 시스템 구현]
-        with t_recovery:
-            st.warning("데이터 유실 시 직전 상태로 되돌립니다.")
-            if st.session_state.db_snapshot is not None:
-                st.write("마지막 변경 전 이력 존재")
-                if st.button("⏮️ 직전 상태로 복구하기", use_container_width=True):
-                    conn.update(data=st.session_state.db_snapshot)
-                    st.session_state.db_snapshot = None # 복구 후 스냅샷 초기화
-                    st.success("복구가 완료되었습니다!")
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.info("복구 가능한 스냅샷이 없습니다. (현재 페이지 접속 후 변경 사항이 있어야 생성됨)")
+            with t_edit:
+                a_sel = st.selectbox("수정 선택", df.apply(lambda x: f"[{x['상태']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist())
+                a_idx = df.apply(lambda x: f"[{x['상태']}] {x['설비명 & 작업내용']} - {x['신청자']}", axis=1).tolist().index(a_sel)
+                a_id = df.iloc[a_idx]['ID']
+                with st.expander("내용 수정"):
+                    row = df.iloc[a_idx]
+                    nc = st.selectbox("분류 ", CATEGORIES, index=CATEGORIES.index(row['분류']) if row['분류'] in CATEGORIES else 0)
+                    ne = st.text_input("작업내용 ", value=row['설비명 & 작업내용'])
+                    nd = st.date_input("날짜 ", value=pd.to_datetime(row['날짜']))
+                    if st.button("변경 저장"):
+                        df.at[a_idx, '분류'] = nc
+                        df.at[a_idx, '설비명 & 작업내용'] = ne
+                        df.at[a_idx, '날짜'] = str(nd)
+                        safe_update(df)
+
+            with t_list:
+                adm_month = st.selectbox("조회 월", ["전체 보기"] + available_months)
+                st.dataframe(df if adm_month == "전체 보기" else df[df['월별'] == adm_month], hide_index=True)
+
+            # 🚨 [복구 시스템 구현]
+            with t_recovery:
+                st.warning("데이터 유실 시 직전 상태로 되돌립니다.")
+                if st.session_state.db_snapshot is not None:
+                    st.write("마지막 변경 전 이력 존재")
+                    if st.button("⏮️ 직전 상태로 복구하기", use_container_width=True):
+                        conn.update(data=st.session_state.db_snapshot)
+                        st.session_state.db_snapshot = None # 복구 후 스냅샷 초기화
+                        st.success("복구가 완료되었습니다!")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.info("복구 가능한 스냅샷이 없습니다. (현재 페이지 접속 후 변경 사항이 있어야 생성됨)")
+        else:
+            # 🚨 남혁(조회전용) 계정: 일정표 확인만 가능, 승인/신규 등록 불가
+            st.markdown("##### 조회 전용 계정")
+            st.info("이 계정은 일정표 확인만 가능합니다. 결재, 신규 등록, 수정, 삭제 권한이 없습니다.")
